@@ -57,7 +57,7 @@ means the slides here, in the file
 [`vinoski-opt-native-code.pdf`](https://github.com/vinoski/bitwise/blob/master/vinoski-opt-native-code.pdf),
 differ from those originally presented.
 
-This code was also presented at CodeMesh 2014, 5 Nov 2014. The slides
+That code was also presented at CodeMesh 2014, 5 Nov 2014. The slides
 for that talk, which are in the file
 [`vinoski-schedulers.pdf`](https://github.com/vinoski/bitwise/blob/master/vinoski-schedulers.pdf),
 include more details than those for the Chicago Erlang talk,
@@ -73,17 +73,21 @@ option. For example, the following code can be interactively run in an
 Erlang shell to cause the shell to receive messages when any NIFs
 execute on a regular scheduler thread for 10ms or more:
 
-    1> erlang:system_monitor(self(), [{long_schedule, 10}]).
-    undefined
+```erl
+1> erlang:system_monitor(self(), [{long_schedule, 10}]).
+undefined
+```
 
 If any NIF executions meet or exceed the 10ms limit, the shell will
 receive messages similar to the following:
 
-    2> spawn(fun() -> bitwise:exor(LargeBinary, 16#5A) end).
-    <0.39.0>
-    3> flush().
-    Shell got {monitor,<0.39.0>,long_schedule,
-                       [{timeout,6018},{in,undefined},{out,undefined}]}
+```erl
+2> spawn(fun() -> bitwise:exor(LargeBinary, 16#5A) end).
+<0.39.0>
+3> flush().
+Shell got {monitor,<0.39.0>,long_schedule,
+                   [{timeout,6018},{in,undefined},{out,undefined}]}
+```
 
 Here, the `{timeout, 6018}` portion of the message shows that
 `bitwise:exor/2` executed for slightly more than 6 seconds.
