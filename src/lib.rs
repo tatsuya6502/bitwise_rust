@@ -25,7 +25,10 @@ use libc::c_uint;
 /// Create NIF module data and init function.
 /// Note that exor, exor_bad, and exor_dirty all run the same Rust function,
 /// but exor and exor_bad run it on a regular scheduler thread whereas
-/// exor_dirty runs it on a dirty CPU scheduler thread
+/// exor_dirty runs it on a dirty CPU scheduler thread.
+
+// Erlang: Set the NIF name to b"bitwise\0"
+// Elixir: Set the NIF name to b"Elixir.BitwiseNif\0"
 nif_init!(b"bitwise\0", Some(load), Some(reload), Some(upgrade), Some(unload),
           nif!(b"exor\0",       2, exor),
           nif!(b"exor_bad\0",   2, exor),
@@ -61,41 +64,37 @@ extern "C" fn unload(_env: *mut ErlNifEnv,
 extern "C" fn exor(env: *mut ErlNifEnv,
                    argc: c_int,
                    args: *const ERL_NIF_TERM) -> ERL_NIF_TERM {
-    unsafe {
-        let mut bin: ErlNifBinary = uninitialized();
-        let mut outbin: ErlNifBinary = uninitialized();
-        let mut val: c_uint = uninitialized();
+    let mut in_bin: ErlNifBinary  = unsafe { uninitialized() };
+    let mut out_bin: ErlNifBinary = unsafe { uninitialized() };
+    let mut byte: c_uint          = unsafe { uninitialized() };
 
-        if argc != 2
-            || 0 == enif_inspect_binary(env, *args, &mut bin)
-            || 0 == enif_get_uint(env, *args.offset(1), &mut val)
-            || val > 255 {
-            return enif_make_badarg(env);
-        }
-        if bin.size == 0 {
-            return *args;
-        }
-
-        enif_alloc_binary(bin.size, &mut outbin);
-
-        let bin_slice: &[u8] = slice::from_raw_parts(bin.data, bin.size);
-        let outbin_slice: &mut[u8] = slice::from_raw_parts_mut(outbin.data, bin.size);
-
-        do_xor(bin_slice, outbin_slice, val as u8);
-
-        // @TODO: Implement enif_make_tuple2() and friends in ruster_unsafe
-        // enif_make_tuple2(env,
-        //                  enif_make_binary(env, &mut outbin),
-        //                  enif_make_int(env, 0))
-        enif_make_binary(env, &mut outbin)
+    if argc != 2
+        || 0 == unsafe { enif_inspect_binary(env, *args, &mut in_bin) }
+        || 0 == unsafe { enif_get_uint(env, *args.offset(1), &mut byte) }
+        || byte > 255 {
+        return unsafe { enif_make_badarg(env) };
     }
+    if in_bin.size == 0 {
+        return unsafe { *args };
+    }
+
+    unsafe { enif_alloc_binary(in_bin.size, &mut out_bin) };
+
+    let in_bin_slice  = unsafe { slice::from_raw_parts(in_bin.data, in_bin.size) };
+    let out_bin_slice = unsafe { slice::from_raw_parts_mut(out_bin.data, in_bin.size) };
+
+    apply_xor(in_bin_slice, out_bin_slice, byte as u8);
+
+    // @TODO: Implement enif_make_tuple2() and friends in ruster_unsafe
+    // unsafe { enif_make_tuple2(env,
+    //                           enif_make_binary(env, &mut outbin),
+    //                           enif_make_int(env, 0)) }
+    unsafe { enif_make_binary(env, &mut out_bin) }
 }
 
-/// Reads source bytes, applies xor xor_byte to each byte, and
-/// stores them to target.
-fn do_xor(source: &[u8], target: &mut[u8], xor_byte: u8) {
+fn apply_xor(source: &[u8], target: &mut[u8], byte: u8) {
     for (src_b, tgt_b) in source.iter().zip(target.iter_mut()) {
-        (*tgt_b) = (*src_b) ^ xor_byte;
+        (*tgt_b) = (*src_b) ^ byte;
     }
 }
 
