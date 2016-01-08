@@ -1,0 +1,21 @@
+[root]
+name = "bitwise_rust_erlang"
+version = "0.1.0"
+dependencies = [
+ "libc 0.2.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "ruster_unsafe 0.2.0 (git+https://github.com/tatsuya6502/ruster_unsafe/?rev=nif-2.9-unmerged)",
+]
+
+[[package]]
+name = "libc"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
+name = "ruster_unsafe"
+version = "0.2.0"
+source = "git+https://github.com/tatsuya6502/ruster_unsafe/?rev=nif-2.9-unmerged#cc5d996372ec748a66ba0cc40bc2c1d964e16610"
+dependencies = [
+ "libc 0.2.4 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
