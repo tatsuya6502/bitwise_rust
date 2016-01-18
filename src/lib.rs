@@ -14,47 +14,52 @@ use std::mem::uninitialized;
 use std::slice;
 
 extern crate libc;
+use libc::c_uchar;
 use libc::c_uint;
+use libc::c_ulong;
 
-/// (module doc)
-/// The exor functions here take a binary and a byte and generate a new
-/// binary by applying xor of the byte value to each byte of the binary.
-/// It returns a tuple of the new binary and a count of how many times
-/// the Erlang scheduler thread is yielded during processing of the binary.
-
-/// Create NIF module data and init function.
-/// Note that exor, exor_bad, and exor_dirty all run the same Rust function,
-/// but exor and exor_bad run it on a regular scheduler thread whereas
-/// exor_dirty runs it on a dirty CPU scheduler thread.
+// @TODO: This need to be a module doc.
+// (see https://doc.rust-lang.org/book/documentation.html#documenting-modules)
+//
+// The exor functions here take a binary and a byte and generate a new
+// binary by applying xor of the byte value to each byte of the binary.
+// It returns a tuple of the new binary and a count of how many times
+// the Erlang scheduler thread is yielded during processing of the binary.
+//
+// Create NIF module data and init function.
+// Note that exor, exor_bad, and exor_dirty all run the same Rust function,
+// but exor and exor_bad run it on a regular scheduler thread whereas
+// exor_dirty runs it on a dirty CPU scheduler thread.
 
 // Erlang: Set the NIF name to b"bitwise\0"
 // Elixir: Set the NIF name to b"Elixir.BitwiseNif\0"
-nif_init!(b"bitwise\0", Some(load), Some(reload), Some(upgrade), Some(unload),
+nif_init!(b"Elixir.BitwiseNif\0",
+          Some(load),    // on-load
+          None,          // on-reload
+          Some(upgrade), // on-upgrade
+          None,          // on-unload
           nif!(b"exor\0",       2, exor),
           nif!(b"exor_bad\0",   2, exor),
-          // nif!(b"exor_yield\0", 2, exor_yield),
+          nif!(b"exor_yield\0", 2, exor_yield),
           nif!(b"exor_dirty\0", 2, exor, ERL_NIF_DIRTY_JOB_CPU_BOUND)
           );
 
-/// Does nothing, reports success
+const DEFAULT_MAX_BYTES_PER_SLICE: c_ulong = 4 * 1024 * 1024;
+const TIMESLICE_EXHAUSTED: c_int = 1;
+
 extern "C" fn load(_env: *mut ErlNifEnv,
                    _priv_data: *mut *mut c_void,
-                   _load_info: ERL_NIF_TERM)-> c_int { 0 }
+                   _load_info: ERL_NIF_TERM)-> c_int {
+    0
+}
 
-/// Does nothing, reports success
-extern "C" fn reload(_env: *mut ErlNifEnv,
-                     _priv_data: *mut *mut c_void,
-                     _load_info: ERL_NIF_TERM) -> c_int { 0 }
-
-/// Does nothing, reports success
 extern "C" fn upgrade(_env: *mut ErlNifEnv,
                       _priv_data: *mut *mut c_void,
                       _old_priv_data: *mut *mut c_void,
-                      _load_info: ERL_NIF_TERM) -> c_int { 0 }
+                      _load_info: ERL_NIF_TERM)-> c_int {
+    0
+}
 
-/// Does nothing, reports success
-extern "C" fn unload(_env: *mut ErlNifEnv,
-                     _priv_data: *mut c_void) {}
 
 /// Erlang: -spec exor(binary(), byte::0..255) -> binary().
 ///
@@ -64,7 +69,7 @@ extern "C" fn unload(_env: *mut ErlNifEnv,
 extern "C" fn exor(env: *mut ErlNifEnv,
                    argc: c_int,
                    args: *const ERL_NIF_TERM) -> ERL_NIF_TERM {
-    let mut in_bin: ErlNifBinary  = unsafe { uninitialized() };
+    let mut in_bin:  ErlNifBinary = unsafe { uninitialized() };
     let mut out_bin: ErlNifBinary = unsafe { uninitialized() };
     let mut byte: c_uint          = unsafe { uninitialized() };
 
@@ -85,11 +90,147 @@ extern "C" fn exor(env: *mut ErlNifEnv,
 
     apply_xor(in_bin_slice, out_bin_slice, byte as u8);
 
-    // @TODO: Implement enif_make_tuple2() and friends in ruster_unsafe
-    // unsafe { enif_make_tuple2(env,
-    //                           enif_make_binary(env, &mut outbin),
-    //                           enif_make_int(env, 0)) }
-    unsafe { enif_make_binary(env, &mut out_bin) }
+    let yields = 0;
+    unsafe {make_tuple2(env,
+                        &enif_make_binary(env, &mut out_bin),
+                        &enif_make_int(env, yields)) }
+}
+
+/// Erlang: -spec exor_yield(binary(), byte::0..255) -> binary().
+///
+/// exor_yield just schedules exor2 for execution, providing an
+/// initial guess of 4MB for the max number of bytes to process before
+/// yielding the scheduler thread.
+extern "C" fn exor_yield(env: *mut ErlNifEnv,
+                         argc: c_int,
+                         args: *const ERL_NIF_TERM) -> ERL_NIF_TERM {
+    let mut in_bin: ErlNifBinary = unsafe { uninitialized() };
+    let mut byte: c_uint = unsafe { uninitialized() };
+
+    if argc != 2
+        || 0 == unsafe { enif_inspect_binary(env, *args, &mut in_bin) }
+        || 0 == unsafe { enif_get_uint(env, *args.offset(1), &mut byte) }
+        || byte > 255 {
+        return unsafe { enif_make_badarg(env) };
+    }
+
+    if in_bin.size == 0 {
+        return unsafe { *args };
+    }
+
+    let res_type: *mut ErlNifResourceType =
+        unsafe { enif_priv_data(env) } as *mut ErlNifResourceType;
+    let res: *mut c_void = unsafe { enif_alloc_resource(res_type, in_bin.size) };
+
+    let new_args = unsafe {
+        [*args.offset(0),
+         *args.offset(1),
+         enif_make_ulong(env, DEFAULT_MAX_BYTES_PER_SLICE),
+         enif_make_ulong(env, 0),
+         enif_make_resource(env, res),
+         enif_make_int(env, 0)]
+    };
+
+    unsafe { enif_release_resource(res) };
+    unsafe { enif_schedule_nif(env, b"exor2\0" as *const u8, 0,
+                               Some(exor2), 6, new_args.as_ptr()) }
+}
+
+
+/// exor2 is an "internal NIF" scheduled by exor_yield above. It takes
+/// the binary and byte arguments, same as the other functions here,
+/// but also takes a count of the max number of bytes to process per
+/// timeslice, the offset into the binary at which to start
+/// processing, the resource type holding the resulting data, and the
+/// number of times rescheduling is done via enif_schedule_nif.
+extern "C" fn exor2(env: *mut ErlNifEnv,
+                    argc: c_int,
+                    args: *const ERL_NIF_TERM) -> ERL_NIF_TERM {
+    let res_type: *mut ErlNifResourceType =
+        unsafe { enif_priv_data(env) } as *mut ErlNifResourceType;
+
+    let mut in_bin: ErlNifBinary          = unsafe { uninitialized() };
+    let mut val: c_uint                   = unsafe { uninitialized() };
+    let mut max_bytes_per_slice: c_ulong  = unsafe { uninitialized() };
+    let mut start_offset: c_ulong         = unsafe { uninitialized() };
+    let mut res: *mut c_void              = unsafe { uninitialized() };
+    let mut yields: c_int                 = unsafe { uninitialized() };
+
+    if argc != 6
+        || 0 == unsafe { enif_inspect_binary(env, *args, &mut in_bin) }
+        || 0 == unsafe { enif_get_uint(env, *args.offset(1), &mut val) }
+        || val > 255
+        || 0 == unsafe { enif_get_ulong(env, *args.offset(2), &mut max_bytes_per_slice) }
+        || 0 == unsafe { enif_get_ulong(env, *args.offset(3), &mut start_offset) }
+        || 0 == unsafe { enif_get_resource(env, *args.offset(4), res_type, &mut res) }
+        || 0 == unsafe { enif_get_int(env, *args.offset(5), &mut yields) } {
+        return unsafe { enif_make_badarg(env) };
+    }
+
+    let byte = val as c_uchar;
+
+    let mut pos = start_offset as usize;
+    let mut end_offset = (start_offset + max_bytes_per_slice) as usize;
+    if end_offset > in_bin.size {
+        end_offset = in_bin.size;
+    }
+    let mut consumed_timeslice: c_int = 0;
+
+    loop {
+        // gettimeofday(&start, NULL);
+
+        let in_bin_slice = unsafe {
+            slice::from_raw_parts(in_bin.data.offset(pos as isize),
+                                  end_offset - pos + 1)
+        };
+        let res_bin_slice = unsafe {
+            slice::from_raw_parts_mut(res.offset(pos as isize) as *mut u8,
+                                      end_offset - pos + 1)
+        };
+
+        apply_xor(in_bin_slice, res_bin_slice, byte as u8);
+
+        pos = end_offset;
+        if pos == in_bin.size {
+            // We are done. Break out from the loop and return the result.
+            break;
+        }
+
+        // gettimeofday(&stop, NULL);
+        // determine how much of the timeslice was used
+        // timersub(&stop, &start, &slice);
+        // let percent: c_int = (slice.tv_sec*1000000+slice.tv_usec)/10) as c_int;
+        let percent: c_int = 100;  // @TODO: Replace with above.
+        consumed_timeslice += percent;
+
+        let resp = unsafe { enif_consume_timeslice(env, fix_range(percent)) };
+        if resp == TIMESLICE_EXHAUSTED {
+            // the timeslice has been used up, so adjust our max_bytes_per_slice byte
+            // count based on the processing we've done, then reschedule to run
+            // again.
+            let max_bytes_per_slice =
+                adjust_slice_size((pos as c_ulong) - start_offset,
+                                  consumed_timeslice as c_ulong);
+            let new_args = unsafe {
+                [*args.offset(0),
+                 *args.offset(1),
+                 enif_make_ulong(env, max_bytes_per_slice),
+                 enif_make_ulong(env, pos as c_ulong),
+                 *args.offset(4),
+                 enif_make_int(env, yields + 1)]
+            };
+            return unsafe { enif_schedule_nif(env, b"exor2\0" as *const u8, 0,
+                                              Some(exor2), argc, new_args.as_ptr()) };
+        }
+        end_offset += max_bytes_per_slice as usize;
+        if end_offset > in_bin.size {
+            end_offset = in_bin.size;
+        }
+    }
+
+    // We are done. Return the result.
+    let out_bin = unsafe { enif_make_resource_binary(env, res, res, in_bin.size) };
+    unsafe { make_tuple2(env, &out_bin, &enif_make_int(env, yields)) }
 }
 
 fn apply_xor(source: &[u8], target: &mut[u8], byte: u8) {
@@ -98,104 +239,33 @@ fn apply_xor(source: &[u8], target: &mut[u8], byte: u8) {
     }
 }
 
-// C lang
-//
-// / exor_yield just schedules exor2 for execution, providing an initial
-// / guess of 4MB for the max number of bytes to process before yielding the
-// / scheduler thread
-// static ERL_NIF_TERM
-// exor_yield(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
-// {
-//     ErlNifResourceType* res_type = (ErlNifResourceType*)enif_priv_data(env);
-//     ERL_NIF_TERM newargv[6];
-//     ErlNifBinary bin;
-//     unsigned val;
-//     void* res;
-//
-//     if (argc != 2 || !enif_inspect_binary(env, argv[0], &bin) ||
-//         !enif_get_uint(env, argv[1], &val) || val > 255)
-//         return enif_make_badarg(env);
-//     if (bin.size == 0)
-//         return argv[0];
-//     newargv[0] = argv[0];
-//     newargv[1] = argv[1];
-//     newargv[2] = enif_make_ulong(env, 4194304);
-//     newargv[3] = enif_make_ulong(env, 0);
-//     res = enif_alloc_resource(res_type, bin.size);
-//     newargv[4] = enif_make_resource(env, res);
-//     newargv[5] = enif_make_int(env, 0);
-//     enif_release_resource(res);
-//     return enif_schedule_nif(env, "exor2", 0, exor2, 6, newargv);
-// }
+fn fix_range(percent: c_int) -> c_int {
+    // enif_consume_timeslice only accepts percent between 1 and 100.
+    if percent <= 0 {
+        1
+    } else if percent > 100 {
+        100
+    } else {
+        percent
+    }
+}
 
-// C lang
-//
-// / exor2 is an "internal NIF" scheduled by exor_yield above. It takes the
-// / binary and byte arguments, same as the other functions here, but also
-// / takes a count of the max number of bytes to process per timeslice, the
-// / offset into the binary at which to start processing, the resource type
-// / holding the resulting data, and the number of times rescheduling is done
-// / via enif_schedule_nif.
-// static ERL_NIF_TERM
-// exor2(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
-// {
-//     ErlNifResourceType* res_type = (ErlNifResourceType*)enif_priv_data(env);
-//     unsigned long offset, i, end, max_per_slice;
-//     struct timeval start, stop, slice;
-//     int pct, total = 0, yields;
-//     ERL_NIF_TERM newargv[6];
-//     ERL_NIF_TERM result;
-//     unsigned char byte;
-//     ErlNifBinary bin;
-//     unsigned val;
-//     void* res;
-//
-//     if (argc != 6 || !enif_inspect_binary(env, argv[0], &bin) ||
-//         !enif_get_uint(env, argv[1], &val) || val > 255 ||
-//         !enif_get_ulong(env, argv[2], &max_per_slice) ||
-//         !enif_get_ulong(env, argv[3], &offset) ||
-//         !enif_get_resource(env, argv[4], res_type, &res) ||
-//         !enif_get_int(env, argv[5], &yields))
-//         return enif_make_badarg(env);
-//     byte = (unsigned char)val;
-//     end = offset + max_per_slice;
-//     if (end > bin.size) end = bin.size;
-//     i = offset;
-//     while (i < bin.size) {
-//         gettimeofday(&start, NULL);
-//         do {
-//             ((char*)res)[i] = bin.data[i] ^ byte;
-//         } while (++i < end);
-//         if (i == bin.size) break;
-//         gettimeofday(&stop, NULL);
-//         /* determine how much of the timeslice was used */
-//         timersub(&stop, &start, &slice);
-//         pct = (int)((slice.tv_sec*1000000+slice.tv_usec)/10);
-//         total += pct;
-//         if (pct > 100) pct = 100;
-//         else if (pct == 0) pct = 1;
-//         if (enif_consume_timeslice(env, pct)) {
-//             /* the timeslice has been used up, so adjust our max_per_slice byte count based on
-//              * the processing we've done, then reschedule to run again */
-//             max_per_slice = i - offset;
-//             if (total > 100) {
-//                 int m = (int)(total/100);
-//                 if (m == 1)
-//                     max_per_slice -= (unsigned long)(max_per_slice*(total-100)/100);
-//                 else
-//                     max_per_slice = (unsigned long)(max_per_slice/m);
-//             }
-//             newargv[0] = argv[0];
-//             newargv[1] = argv[1];
-//             newargv[2] = enif_make_ulong(env, max_per_slice);
-//             newargv[3] = enif_make_ulong(env, i);
-//             newargv[4] = argv[4];
-//             newargv[5] = enif_make_int(env, yields+1);
-//             return enif_schedule_nif(env, "exor2", 0, exor2, argc, newargv);
-//         }
-//         end += max_per_slice;
-//         if (end > bin.size) end = bin.size;
-//     }
-//     result = enif_make_resource_binary(env, res, res, bin.size);
-//     return enif_make_tuple2(env, result, enif_make_int(env, yields));
-// }
+fn adjust_slice_size(bytes_processed: c_ulong,
+                     consumed_timeslice: c_ulong) -> c_ulong {
+    if consumed_timeslice <= 100 {
+        bytes_processed
+    } else {
+        let m = consumed_timeslice / 100;
+        if m == 1 {
+            bytes_processed - (bytes_processed * (consumed_timeslice - 100) / 100)
+        } else {
+           bytes_processed / m
+        }
+    }
+}
+
+fn make_tuple2(env: *mut ErlNifEnv,
+               e1: *const ERL_NIF_TERM, e2: *const ERL_NIF_TERM) -> ERL_NIF_TERM {
+    let tuple_elements = unsafe { [*e1, *e2] };
+    unsafe { enif_make_tuple_from_array(env, tuple_elements.as_ptr(), 2) }
+}
