@@ -11,6 +11,7 @@ extern crate ruster_unsafe;
 use ruster_unsafe::*;
 
 use std::mem::uninitialized;
+use std::ptr;
 use std::slice;
 
 extern crate libc;
@@ -47,16 +48,36 @@ nif_init!(b"Elixir.BitwiseNif\0",
 const DEFAULT_MAX_BYTES_PER_SLICE: c_ulong = 4 * 1024 * 1024;
 const TIMESLICE_EXHAUSTED: c_int = 1;
 
-extern "C" fn load(_env: *mut ErlNifEnv,
-                   _priv_data: *mut *mut c_void,
+extern "C" fn load(env: *mut ErlNifEnv,
+                   priv_data: *mut *mut c_void,
                    _load_info: ERL_NIF_TERM)-> c_int {
+    let module_str: *const u8 = ptr::null();
+    let mut tried: ErlNifResourceFlags = unsafe { uninitialized() };
+    unsafe {
+        *priv_data = enif_open_resource_type(env, module_str,
+                                             b"bitwise_buf\0" as *const u8,
+                                             None,
+                                             // (ErlNifResourceFlags::ERL_NIF_RT_CREATE
+                                             //  | ErlNifResourceFlags::ERL_NIF_RT_TAKEOVER),
+                                             ErlNifResourceFlags::ERL_NIF_RT_CREATE,
+                                             &mut tried) as *mut c_void
+    };
     0
 }
 
-extern "C" fn upgrade(_env: *mut ErlNifEnv,
-                      _priv_data: *mut *mut c_void,
+extern "C" fn upgrade(env: *mut ErlNifEnv,
+                      priv_data: *mut *mut c_void,
                       _old_priv_data: *mut *mut c_void,
                       _load_info: ERL_NIF_TERM)-> c_int {
+    let module_str: *const u8 = ptr::null();
+    let mut tried: ErlNifResourceFlags = unsafe { uninitialized() };
+    unsafe {
+        *priv_data = enif_open_resource_type(env, module_str,
+                                             b"bitwise_buf\0" as *const u8,
+                                             None,
+                                             ErlNifResourceFlags::ERL_NIF_RT_TAKEOVER,
+                                             &mut tried) as *mut c_void
+    };
     0
 }
 

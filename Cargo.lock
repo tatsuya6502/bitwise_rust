@@ -14,7 +14,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "ruster_unsafe"
 version = "0.2.0"
-source = "git+https://github.com/tatsuya6502/ruster_unsafe/?rev=nif-2.9-unmerged#cc5d996372ec748a66ba0cc40bc2c1d964e16610"
+source = "git+https://github.com/tatsuya6502/ruster_unsafe/?rev=nif-2.9-unmerged#250957b570f747e04b13366605c0baa633a7050b"
 dependencies = [
  "libc 0.2.4 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
